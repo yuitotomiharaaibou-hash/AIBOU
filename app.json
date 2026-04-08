@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "AIBOU",
+    "slug": "aibou",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "aibou",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.aibou.app"
+    },
+    "android": {
+      "package": "com.aibou.app"
+    },
+    "plugins": [
+      "expo-router"
+    ]
+  }
+}

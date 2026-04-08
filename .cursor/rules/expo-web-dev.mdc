@@ -1,0 +1,21 @@
+---
+description: AIBOU Expo Web — 反映されないバンドル / リロード無効の防止
+globs: package.json, scripts/start-web.cjs, app/**/*.tsx
+---
+
+## Web 開発の起動
+
+- **常に** `npm run web` を使う（`scripts/start-web.cjs` が `CI` を外してから `expo start --web` する）。
+- 古い画面のままなら **`npm run web:clear`**（Metro キャッシュ削除 + 再起動）。
+- ブラウザがまだ古い場合は **スーパーリロード**（macOS: Cmd+Shift+R）。
+
+## やってはいけないこと
+
+- **`CI=1` / `CI=true` を付けたまま** `expo start` しない（Expo がリロードを無効にし、変更がブラウザに乗らない）。
+- 別ターミナルで **古い Metro（8081）** が残ったまま別プロセスを増やさない。迷ったら 8081 を止めてから `npm run web:clear`。
+
+## 原因の整理
+
+1. **CI 環境変数** → Fast Refresh / 更新が止まる  
+2. **Metro キャッシュ** → 同じ localhost でも古い JS  
+3. **ブラウザキャッシュ** → スーパーリロードで回避
