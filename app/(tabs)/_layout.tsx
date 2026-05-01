@@ -1,5 +1,5 @@
 import { Tabs } from "expo-router";
-import { Home, ListTodo, Calendar, BarChart2, UserRound } from "lucide-react-native";
+import { Home, ListTodo, Calendar, MapPin, UserRound } from "lucide-react-native";
 import { PRIMARY, UI_BORDER, UI_SCREEN, UI_TEXT_SECONDARY } from "@/constants/theme";
 
 const ICON = 24;
@@ -51,8 +51,8 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="report"
         options={{
-          title: "レポート",
-          tabBarIcon: ({ color }) => <BarChart2 size={ICON} color={color} strokeWidth={SW} />,
+          title: "ルート",
+          tabBarIcon: ({ color }) => <MapPin size={ICON} color={color} strokeWidth={SW} />,
         }}
       />
       <Tabs.Screen

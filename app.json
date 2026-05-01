@@ -2,7 +2,7 @@
   "expo": {
     "name": "AIBOU",
     "slug": "aibou",
-    "version": "1.0.0",
+    "version": "1.1.4",
     "orientation": "portrait",
     "scheme": "aibou",
     "icon": "./assets/icon.png",

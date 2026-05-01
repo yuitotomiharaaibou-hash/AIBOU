@@ -8,6 +8,8 @@ type StartPickerModalProps = {
   options?: string[];
   onSelect: (value: string) => void;
   onClose: () => void;
+  /** 長いリスト（課外活動など）用。未指定時は従来どおり */
+  listMaxHeight?: number;
 };
 
 export function StartPickerModal({
@@ -16,7 +18,10 @@ export function StartPickerModal({
   options = DUMMY_OPTIONS,
   onSelect,
   onClose,
+  listMaxHeight,
 }: StartPickerModalProps) {
+  const scrollMax = listMaxHeight ?? 260;
+  const cardMax = listMaxHeight ? Math.min(listMaxHeight + 80, 560) : 320;
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.root}>
@@ -26,10 +31,10 @@ export function StartPickerModal({
           accessibilityLabel="閉じる"
         />
         <View pointerEvents="box-none" style={[StyleSheet.absoluteFillObject, styles.centerWrap]}>
-          <View style={styles.card}>
+          <View style={[styles.card, { maxHeight: cardMax }]}>
             <Text style={styles.cardTitle}>{title}</Text>
             <ScrollView
-              style={styles.scroll}
+              style={[styles.scroll, { maxHeight: scrollMax }]}
               contentContainerStyle={{ paddingBottom: 4 }}
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator
@@ -74,7 +79,6 @@ const styles = StyleSheet.create({
   card: {
     width: "100%",
     maxWidth: 360,
-    maxHeight: 320,
     borderRadius: 16,
     backgroundColor: "#ffffff",
     paddingHorizontal: 14,
@@ -93,9 +97,7 @@ const styles = StyleSheet.create({
     color: "#222222",
     textAlign: "center",
   },
-  scroll: {
-    maxHeight: 260,
-  },
+  scroll: {},
   empty: {
     textAlign: "center",
     fontSize: 14,

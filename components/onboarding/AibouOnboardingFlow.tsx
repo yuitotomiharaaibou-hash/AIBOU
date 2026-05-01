@@ -21,6 +21,8 @@ import {
   Calculator,
   Target,
   UserRound,
+  Moon,
+  Sparkles,
 } from "lucide-react-native";
 import {
   PRIMARY,
@@ -37,6 +39,7 @@ import {
   uiCardShadow,
 } from "@/constants/theme";
 import { AibouMascot } from "@/components/AibouMascot";
+import { ClubSchedulePicker } from "@/components/ClubSchedulePicker";
 import { useProfile, PROFILE_OPTIONS, ProfileKey } from "@/context/ProfileContext";
 import { useScores } from "@/context/ScoreContext";
 import {
@@ -44,6 +47,8 @@ import {
   type OnboardingQuestionKey,
   type OnboardingStep,
 } from "@/lib/onboardingSteps";
+import { getClubDisplayForUi } from "@/lib/clubScheduleProfile";
+import { PostOnboardingSetupFlow } from "@/components/onboarding/PostOnboardingSetupFlow";
 
 const { width: WIN_W, height: WIN_H } = Dimensions.get("window");
 const HERO_H = Math.min(WIN_H * 0.48, 380);
@@ -70,7 +75,7 @@ const QUESTION_ICONS: Record<OnboardingQuestionKey, typeof School> = {
 const QUESTION_LABELS: Record<OnboardingQuestionKey, string> = {
   school: "学校を選択",
   grade: "学年を選択",
-  club: "部活を選択",
+  club: "部活動・課外活動の時間",
   juku: "塾を選択",
   englishSlots: "英語コマを選択",
   mathSlots: "数学コマを選択",
@@ -355,14 +360,8 @@ function renderStepBody(step: OnboardingStep, ctx: RenderCtx) {
           bottomPad={ctx.bottomPad}
         />
       );
-    case "finish":
-      return (
-        <FinishSlide
-          bottomPad={ctx.bottomPad}
-          onComplete={ctx.goNext}
-          juku={ctx.profile.juku}
-        />
-      );
+    case "post_setup":
+      return <PostOnboardingSetupFlow bottomPad={ctx.bottomPad} onComplete={ctx.goNext} />;
     default:
       return null;
   }
@@ -373,10 +372,47 @@ function HeroSlide({
   bottomPad,
   onNext,
 }: {
-  variant: "morning" | "night";
+  variant: "morning" | "night" | "welcome";
   bottomPad: number;
   onNext: () => void;
 }) {
+  if (variant === "welcome") {
+    return (
+      <View style={{ flex: 1 }}>
+        <View style={{ height: HERO_H, backgroundColor: "#e0f2fe", overflow: "hidden" }}>
+          <HeroDecor />
+          <View style={{ flex: 1, alignItems: "center", justifyContent: "center", paddingTop: 24 }}>
+            <AibouMascot size={88} />
+          </View>
+        </View>
+        <View style={{ flex: 1, paddingHorizontal: 24, paddingTop: 28 }}>
+          <Text
+            style={{
+              fontSize: 24,
+              fontWeight: "800",
+              color: "#0c4a6e",
+              lineHeight: 34,
+            }}
+          >
+            {"AIBOUへようこそ"}
+          </Text>
+          <Text
+            style={{
+              marginTop: 14,
+              fontSize: 15,
+              lineHeight: 24,
+              color: "#0369a1",
+            }}
+          >
+            自己実現に向けた学習計画を、いっしょに続けやすくする相棒です。まずは流れだけ、さっと見ていきましょう。
+          </Text>
+          <View style={{ flex: 1 }} />
+          <GradientPillButton title="つぎへ" onPress={onNext} style={{ marginBottom: bottomPad }} />
+        </View>
+      </View>
+    );
+  }
+
   const morning = variant === "morning";
   return (
     <View style={{ flex: 1 }}>
@@ -430,10 +466,61 @@ function FeatureSlide({
   variant,
   bottomPad,
 }: {
-  variant: "wave" | "trust";
+  variant: "wave" | "trust" | "midnight";
   bottomPad: number;
   onNext: () => void;
 }) {
+  if (variant === "midnight") {
+    return (
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingBottom: bottomPad + 72, paddingHorizontal: 22 }}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", columnGap: 10, marginBottom: 8 }}>
+          <View
+            style={{
+              width: 48,
+              height: 48,
+              borderRadius: 14,
+              backgroundColor: "#cffafe",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Moon size={26} color="#0e7490" strokeWidth={2.2} />
+          </View>
+          <Sparkles size={22} color={TEAL_TINT} strokeWidth={2} />
+        </View>
+        <Text style={[styles.featureTitle, { color: "#0f172a" }]}>
+          相棒のボタンから、{"\n"}いつでも計画を再立案できます
+        </Text>
+        <Text style={styles.featureSub}>
+          「計画の修正がめんどくさい」は受験でもよくある壁です。AIBOUでは、ホームから相棒（再立案）に進み、状況や要望を伝えると学習タスクや予定の組み直し案を出せます。夜中に自動で勝手に進むのではなく、あなたのタイミングで相棒に預けて整えられます。
+        </Text>
+        <View
+          style={{
+            marginTop: 20,
+            padding: 16,
+            borderRadius: UI_RADIUS_LG,
+            backgroundColor: "#f0fdfa",
+            borderWidth: 1,
+            borderColor: "#99f6e4",
+          }}
+        >
+          <Text style={{ fontSize: 14, fontWeight: "700", color: "#134e4a", marginBottom: 6 }}>
+            このアプリの強み
+          </Text>
+          <Text style={{ fontSize: 14, lineHeight: 22, color: UI_TEXT_SECONDARY }}>
+            意志力に頼り切らず、毎日ちゃんと「次の一手」がそろうこと。手を動かす前に計画で消耗しないこと。まずはそこを、できるだけ楽にします。
+          </Text>
+        </View>
+        <View style={{ alignItems: "center", marginTop: 24 }}>
+          <AibouMascot size={72} />
+        </View>
+      </ScrollView>
+    );
+  }
   if (variant === "wave") {
     return (
       <ScrollView
@@ -519,12 +606,18 @@ function FeatureSlide({
 function AccountIntroSlide({ bottomPad, onNext }: { bottomPad: number; onNext: () => void }) {
   return (
     <View style={{ flex: 1, paddingHorizontal: 24 }}>
-      <Text style={[styles.featureTitle, { marginTop: 8 }]}>さあ、プロフィールを{"\n"}一緒に整えましょう</Text>
+      <Text style={[styles.featureTitle, { marginTop: 8 }]}>
+        最初の計画のために、{"\n"}少しだけヒアリングします
+      </Text>
       <Text style={styles.featureSub}>
-        学校・学年・部活・塾・コマ・目標を教えてください。相棒がカレンダーとゴール画面をあなた仕様に初期設定します。
+        学校・学年・部活動・課外活動の時間・塾・コマ・目標点など、あなたの情報を教えてください。入れてもらえるほど、最初の立案が現実に近づきます。あとからマイページでも変更できます。
       </Text>
       <View style={{ marginTop: 20, gap: 12 }}>
-        {["所要時間はおよそ2分", "あとからデータ画面でいつでも変更OK", "選ばなくても先に進めます"].map((t) => (
+        {[
+          "所要時間の目安はおよそ2分です",
+          "選ばなくても先に進められます（あとから直せます）",
+          "計画の組み直しは相棒フローからいつでも実行できます",
+        ].map((t) => (
           <View key={t} style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
             <Text style={{ color: TEAL_TINT, fontWeight: "800" }}>•</Text>
             <Text style={{ flex: 1, fontSize: 15, color: UI_TEXT, lineHeight: 22 }}>{t}</Text>
@@ -592,7 +685,7 @@ function QuestionSlide({
         <Text style={styles.qTitle}>{QUESTION_LABELS[qkey]}</Text>
         {currentValue ? (
           <Text style={{ fontSize: 12, color: UI_TEXT_SECONDARY, marginTop: 4 }}>
-            選択中: {currentValue}
+            選択中: {qkey === "club" ? getClubDisplayForUi(currentValue) : currentValue}
           </Text>
         ) : null}
       </View>
@@ -606,6 +699,13 @@ function QuestionSlide({
             style={styles.qInput}
           />
         </View>
+      ) : qkey === "club" ? (
+        <ClubSchedulePicker
+          value={profile.club}
+          school={profile.school}
+          onChange={(v) => onSelect("club", v)}
+          contentBottomPad={bottomPad + 72}
+        />
       ) : (
         <View style={styles.qCard}>
           <ScrollView style={{ maxHeight: WIN_H * 0.42 }} nestedScrollEnabled showsVerticalScrollIndicator={false}>

@@ -1,14 +1,17 @@
 {
   "name": "aibou",
-  "version": "1.0.0",
+  "version": "1.1.4",
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
+    "ai:proxy": "node scripts/start-ai-proxy.cjs",
     "web": "node scripts/start-web.cjs",
     "web:clear": "node scripts/start-web.cjs --clear",
-    "web:clean": "node scripts/start-web.cjs --clear"
+    "web:clean": "node scripts/start-web.cjs --clear",
+    "web:personal": "node scripts/start-personal-web.cjs",
+    "web:personal:clear": "node scripts/start-personal-web.cjs --clear"
   },
   "dependencies": {
     "@expo/metro-runtime": "~55.0.6",

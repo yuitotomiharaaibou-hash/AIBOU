@@ -4,8 +4,15 @@ import React, {
   useMemo,
   useState,
   useCallback,
+  useEffect,
   ReactNode,
 } from "react";
+import { simpleStorageGet, simpleStorageSet } from "@/lib/simpleStorage";
+import {
+  USER_DETAIL_KEYS,
+  type UserDetailKey,
+  type UserDetailState,
+} from "@/lib/userDetailFields";
 
 export type ProfileKey =
   | "school"
@@ -18,9 +25,15 @@ export type ProfileKey =
 
 export type ProfileState = Partial<Record<ProfileKey, string>>;
 
+const USER_DETAIL_STORAGE = "aibou.userDetailFields.v1";
+
 type ProfileContextValue = {
   profile: ProfileState;
   setField: (key: ProfileKey, value: string) => void;
+  userDetails: UserDetailState;
+  setUserDetail: (key: UserDetailKey, value: string) => void;
+  /** 空のキーだけ推測文案で埋める（ユーザー入力を上書きしない） */
+  mergeInferredUserDetails: (patch: UserDetailState) => void;
 };
 
 const ProfileContext = createContext<ProfileContextValue | undefined>(
@@ -47,8 +60,8 @@ export const PROFILE_OPTIONS: Record<ProfileKey, string[]> = {
     "その他",
   ],
   grade: ["中1", "中2", "中3", "高1", "高2", "高3"],
-  // 部活は後で本番データに差し替え予定のプレースホルダ
-  club: ["サッカー部", "テニス部", "軽音部", "バスケ部", "文化系サークル", "帰宅部"],
+  /** 部活動・課外活動は曜日・時間帯（ClubSchedulePicker）で入力 */
+  club: [],
   juku: ["鉄緑会", "その他"],
   // 英語の授業コマ
   englishSlots: [
@@ -76,17 +89,63 @@ export const PROFILE_OPTIONS: Record<ProfileKey, string[]> = {
 
 export function ProfileProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<ProfileState>({});
+  const [userDetails, setUserDetails] = useState<UserDetailState>({});
+
+  useEffect(() => {
+    let mounted = true;
+    void (async () => {
+      const raw = await simpleStorageGet(USER_DETAIL_STORAGE);
+      if (!mounted || !raw) return;
+      try {
+        const parsed = JSON.parse(raw) as UserDetailState;
+        if (parsed && typeof parsed === "object") {
+          setUserDetails(parsed);
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    void simpleStorageSet(USER_DETAIL_STORAGE, JSON.stringify(userDetails));
+  }, [userDetails]);
 
   const setField = useCallback((key: ProfileKey, value: string) => {
     setProfile((prev) => ({ ...prev, [key]: value }));
+  }, []);
+
+  const setUserDetail = useCallback((key: UserDetailKey, value: string) => {
+    setUserDetails((prev) => ({ ...prev, [key]: value }));
+  }, []);
+
+  const mergeInferredUserDetails = useCallback((patch: UserDetailState) => {
+    setUserDetails((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const k of USER_DETAIL_KEYS) {
+        const v = patch[k];
+        if (v && String(v).trim() && (next[k] === undefined || next[k] === "")) {
+          next[k] = v;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
   }, []);
 
   const value = useMemo(
     () => ({
       profile,
       setField,
+      userDetails,
+      setUserDetail,
+      mergeInferredUserDetails,
     }),
-    [profile, setField]
+    [profile, setField, userDetails, setUserDetail, mergeInferredUserDetails]
   );
 
   return (
@@ -101,4 +160,3 @@ export function useProfile(): ProfileContextValue {
   }
   return ctx;
 }
-

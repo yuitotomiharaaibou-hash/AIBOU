@@ -60,7 +60,7 @@ export function buildTomorrowPlanProposal(params: {
   tomorrowKey: string;
   preference: PlannerPreference;
   hearing: TomorrowHearing;
-  reason: "tomorrow-manual" | "tomorrow-auto";
+  reason: "tomorrow-manual" | "tomorrow-auto" | "tomorrow-tap";
 }): { tasks: Task[]; logs: ReplanLog[] } {
   const { tasks, todayKey, tomorrowKey, preference, hearing, reason } = params;
 

@@ -9,6 +9,13 @@ export type Koko2SchedulableTask = {
   hour: number;
   completed: boolean;
   pinned?: boolean;
+  importance?: "A" | "B" | "C";
+  dueDate?: string;
+  startDate?: string;
+  endDate?: string;
+  notes?: string;
+  segmentIndex?: number;
+  segmentTotal?: number;
 };
 import { inferHomeScheduleLevels, type ScheduleLevel } from "@/lib/homeScheduleInference";
 

@@ -1,12 +1,24 @@
 import type { ProfileState } from "@/context/ProfileContext";
+import {
+  decodeClubScheduleResolved,
+  effectiveEveningTime,
+  effectiveMorningTime,
+  effectiveOtherWeekdayTime,
+  effectiveOtherWeekendTime,
+  effectiveWeekendAmTime,
+  effectiveWeekendPmTime,
+  type ClubScheduleResolved,
+  type TimeRange,
+} from "@/lib/clubScheduleProfile";
+import { legacyHourInclusiveToSpan, spanFromClock, type PlanSpan } from "@/lib/planTime";
+
+/** ホーム・カレンダーでプロフィールから出す予定名（細かい種別は編集で後から変更可） */
+export const EXTRACURRICULAR_PLAN_TITLE = "部活動・課外活動";
 
 /** 0=なし（白） 1=薄い 2=濃い */
 export type ScheduleLevel = 0 | 1 | 2;
-export type InferredPlanItem = {
-  title: string;
-  startHour: number;
-  endHour: number;
-};
+/** 予定1件（分単位・終端 exclusive） */
+export type InferredPlanItem = PlanSpan;
 
 const DAY_KANJI_TO_GETDAY: Record<string, number> = {
   日: 0,
@@ -21,7 +33,9 @@ const DAY_KANJI_TO_GETDAY: Record<string, number> = {
 function parseJukuSlot(slot: string): {
   weekday: number;
   startHour: number;
+  startMinute: number;
   endHour: number;
+  endMinute: number;
 } | null {
   if (!slot || slot === "受講なし") return null;
   const m = slot.match(
@@ -31,8 +45,10 @@ function parseJukuSlot(slot: string): {
   const weekday = DAY_KANJI_TO_GETDAY[m[1]];
   if (weekday === undefined) return null;
   const startHour = parseInt(m[2], 10);
+  const startMinute = parseInt(m[3], 10);
   const endHour = parseInt(m[4], 10);
-  return { weekday, startHour, endHour };
+  const endMinute = parseInt(m[5], 10);
+  return { weekday, startHour, startMinute, endHour, endMinute };
 }
 
 function setRange(
@@ -56,10 +72,18 @@ function setByMinuteRange(
 ) {
   const start = startHour * 60 + startMinute;
   const end = endHour * 60 + endMinute;
+  applyMinuteOverlapToLevels(levels, start, end);
+}
+
+function applyMinuteOverlapToLevels(
+  levels: Record<number, ScheduleLevel>,
+  startMin: number,
+  endMinExclusive: number
+) {
   for (let h = 0; h < 24; h++) {
     const hourStart = h * 60;
     const hourEnd = hourStart + 60;
-    const overlap = Math.max(0, Math.min(end, hourEnd) - Math.max(start, hourStart));
+    const overlap = Math.max(0, Math.min(endMinExclusive, hourEnd) - Math.max(startMin, hourStart));
     if (overlap <= 0) continue;
     const ratio = overlap / 60;
     const level: ScheduleLevel = ratio >= 0.75 ? 2 : 1;
@@ -67,14 +91,98 @@ function setByMinuteRange(
   }
 }
 
+function toMin(h: number, m: number) {
+  return h * 60 + m;
+}
+
+function applyRangeToLevels(levels: Record<number, ScheduleLevel>, tr: TimeRange) {
+  applyMinuteOverlapToLevels(
+    levels,
+    toMin(tr.startH, tr.startM),
+    toMin(tr.endH, tr.endM) + 1
+  );
+}
+
+function applyClubResolvedToLevels(
+  levels: Record<number, ScheduleLevel>,
+  weekday: number,
+  r: ClubScheduleResolved
+) {
+  if (r.mode === "none" || r.mode === "irregular" || r.mode === "unset") return;
+  if (weekday >= 1 && weekday <= 5) {
+    if (r.morningWeekdays.includes(weekday))
+      applyRangeToLevels(levels, effectiveMorningTime(r, weekday));
+    if (r.eveningWeekdays.includes(weekday))
+      applyRangeToLevels(levels, effectiveEveningTime(r, weekday));
+    if (r.otherWeekdays.includes(weekday))
+      applyRangeToLevels(levels, effectiveOtherWeekdayTime(r, weekday));
+  }
+  if (weekday === 6) {
+    if (r.satAm) applyRangeToLevels(levels, effectiveWeekendAmTime(r, 6));
+    if (r.satPm) applyRangeToLevels(levels, effectiveWeekendPmTime(r, 6));
+    if (r.satOther) applyRangeToLevels(levels, effectiveOtherWeekendTime(r, 6));
+  }
+  if (weekday === 0) {
+    if (r.sunAm) applyRangeToLevels(levels, effectiveWeekendAmTime(r, 0));
+    if (r.sunPm) applyRangeToLevels(levels, effectiveWeekendPmTime(r, 0));
+    if (r.sunOther) applyRangeToLevels(levels, effectiveOtherWeekendTime(r, 0));
+  }
+}
+
+function clubSpansForDayResolved(weekday: number, r: ClubScheduleResolved): InferredPlanItem[] {
+  if (r.mode === "none" || r.mode === "irregular" || r.mode === "unset") return [];
+  const out: InferredPlanItem[] = [];
+  if (weekday >= 1 && weekday <= 5) {
+    if (r.morningWeekdays.includes(weekday)) {
+      const t = effectiveMorningTime(r, weekday);
+      out.push(spanFromClock(EXTRACURRICULAR_PLAN_TITLE, t.startH, t.startM, t.endH, t.endM));
+    }
+    if (r.eveningWeekdays.includes(weekday)) {
+      const t = effectiveEveningTime(r, weekday);
+      out.push(spanFromClock(EXTRACURRICULAR_PLAN_TITLE, t.startH, t.startM, t.endH, t.endM));
+    }
+    if (r.otherWeekdays.includes(weekday)) {
+      const t = effectiveOtherWeekdayTime(r, weekday);
+      out.push(spanFromClock(EXTRACURRICULAR_PLAN_TITLE, t.startH, t.startM, t.endH, t.endM));
+    }
+  }
+  if (weekday === 6) {
+    if (r.satAm) {
+      const t = effectiveWeekendAmTime(r, 6);
+      out.push(spanFromClock(EXTRACURRICULAR_PLAN_TITLE, t.startH, t.startM, t.endH, t.endM));
+    }
+    if (r.satPm) {
+      const t = effectiveWeekendPmTime(r, 6);
+      out.push(spanFromClock(EXTRACURRICULAR_PLAN_TITLE, t.startH, t.startM, t.endH, t.endM));
+    }
+    if (r.satOther) {
+      const t = effectiveOtherWeekendTime(r, 6);
+      out.push(spanFromClock(EXTRACURRICULAR_PLAN_TITLE, t.startH, t.startM, t.endH, t.endM));
+    }
+  }
+  if (weekday === 0) {
+    if (r.sunAm) {
+      const t = effectiveWeekendAmTime(r, 0);
+      out.push(spanFromClock(EXTRACURRICULAR_PLAN_TITLE, t.startH, t.startM, t.endH, t.endM));
+    }
+    if (r.sunPm) {
+      const t = effectiveWeekendPmTime(r, 0);
+      out.push(spanFromClock(EXTRACURRICULAR_PLAN_TITLE, t.startH, t.startM, t.endH, t.endM));
+    }
+    if (r.sunOther) {
+      const t = effectiveOtherWeekendTime(r, 0);
+      out.push(spanFromClock(EXTRACURRICULAR_PLAN_TITLE, t.startH, t.startM, t.endH, t.endM));
+    }
+  }
+  return out;
+}
+
 /**
  * プロフィールと曜日から、左列マスの初期濃淡を推測する。
- * - 睡眠: 0–6 時 濃い
- * - 平日朝: 7–8 薄い（通学・準備）
- * - 平日授業: 9–15 薄い
- * - 平日帰宅: 16 薄い（移動）
- * - 部活: 帰宅部以外は火木 16–18 濃い（例）
- * - 英語・数学コマ（塾）: 該当曜日の時間帯は薄い（上書きで競合時は max）
+ * - 睡眠: 0–6 時 濃い（0:00〜7:00）
+ * - 平日朝: 7–8 薄い（家→学校）
+ * - 開成授業: 8:30 開始の公式夏/冬スケジュールに合わせた分単位
+ * - 課外・塾: 該当帯は薄い〜濃い（max）
  */
 export function inferHomeScheduleLevels(
   d: Date,
@@ -91,68 +199,62 @@ export function inferHomeScheduleLevels(
   const isHigh2 = profile.grade === "高2";
   const isSummer = month >= 4 && month <= 10;
 
-  // 睡眠（0–6）濃い
   setRange(levels, 0, 6, 2);
 
   const isWeekday = weekday >= 1 && weekday <= 5;
   const isSaturday = weekday === 6;
 
-  // 開成の時間割（公式の夏時間/冬時間）をホーム濃淡に反映
   if (isKaisei) {
     if (isWeekday || isSaturday) {
       if (isSummer) {
-        // 予鈴〜1限前
-        setByMinuteRange(levels, 8, 0, 8, 10);
+        setByMinuteRange(levels, 8, 0, 8, 30);
         if (weekday === 3) {
-          // 水曜（HRあり）
-          setByMinuteRange(levels, 8, 10, 11, 0);
-          setByMinuteRange(levels, 11, 5, 11, 35); // HR
-          setByMinuteRange(levels, 11, 40, 12, 30);
-          setByMinuteRange(levels, 12, 30, 13, 10); // 昼休み
-          setByMinuteRange(levels, 13, 10, 15, 0);
+          setByMinuteRange(levels, 8, 30, 11, 20);
+          setByMinuteRange(levels, 11, 25, 11, 55);
+          setByMinuteRange(levels, 12, 0, 12, 50);
+          setByMinuteRange(levels, 12, 50, 13, 30);
+          setByMinuteRange(levels, 13, 30, 15, 20);
         } else if (isSaturday) {
-          // 土曜4限まで
-          setByMinuteRange(levels, 8, 10, 12, 0);
+          setByMinuteRange(levels, 8, 30, 12, 20);
         } else {
-          setByMinuteRange(levels, 8, 10, 12, 0);
-          setByMinuteRange(levels, 12, 0, 12, 40); // 昼休み
-          setByMinuteRange(levels, 12, 40, 14, 30);
+          setByMinuteRange(levels, 8, 30, 12, 20);
+          setByMinuteRange(levels, 12, 20, 13, 0);
+          setByMinuteRange(levels, 13, 0, 14, 50);
         }
       } else {
-        // 冬時間
-        setByMinuteRange(levels, 8, 10, 8, 20);
+        setByMinuteRange(levels, 8, 0, 8, 30);
         if (weekday === 3) {
-          setByMinuteRange(levels, 8, 20, 11, 10);
-          setByMinuteRange(levels, 11, 15, 11, 45); // HR
-          setByMinuteRange(levels, 11, 50, 12, 40);
-          setByMinuteRange(levels, 12, 40, 13, 20); // 昼休み
-          setByMinuteRange(levels, 13, 20, 15, 10);
+          setByMinuteRange(levels, 8, 30, 11, 20);
+          setByMinuteRange(levels, 11, 25, 11, 55);
+          setByMinuteRange(levels, 12, 0, 12, 50);
+          setByMinuteRange(levels, 12, 50, 13, 30);
+          setByMinuteRange(levels, 13, 30, 15, 20);
         } else if (isSaturday) {
-          setByMinuteRange(levels, 8, 20, 12, 10);
+          setByMinuteRange(levels, 8, 30, 12, 20);
         } else {
-          setByMinuteRange(levels, 8, 20, 12, 10);
-          setByMinuteRange(levels, 12, 10, 12, 50); // 昼休み
-          setByMinuteRange(levels, 12, 50, 14, 40);
+          setByMinuteRange(levels, 8, 30, 12, 20);
+          setByMinuteRange(levels, 12, 20, 13, 0);
+          setByMinuteRange(levels, 13, 0, 14, 50);
         }
       }
-      // 通学/下校の余白
-      setRange(levels, 7, 7, 1);
+      setRange(levels, 7, 8, 1);
       setRange(levels, 15, 16, 1);
     }
   } else if (isWeekday) {
-    // 既定値（開成以外）
     setRange(levels, 7, 8, 1);
     setRange(levels, 9, 15, 1);
     setRange(levels, 16, 16, 1);
   }
 
   const club = profile.club;
-  if (club && club !== "帰宅部" && (weekday === 2 || weekday === 4)) {
+  const clubResolved = decodeClubScheduleResolved(club);
+  if (clubResolved) {
+    applyClubResolvedToLevels(levels, weekday, clubResolved);
+  } else if (club && club !== "帰宅部" && (weekday === 2 || weekday === 4)) {
     setRange(levels, 16, 18, 2);
   }
 
   let slots = [profile.englishSlots, profile.mathSlots].filter(Boolean) as string[];
-  // ペルソナ既定: 開成高2・鉄緑会は月水17:20-20:20（英数を週2）
   if (slots.length === 0 && isKaisei && isHigh2 && isTetsu) {
     slots = ["月曜17:20~20:20", "水曜17:20~20:20"];
   }
@@ -160,8 +262,9 @@ export function inferHomeScheduleLevels(
     const parsed = parseJukuSlot(slot);
     if (!parsed) continue;
     if (parsed.weekday !== weekday) continue;
-    const { startHour, endHour } = parsed;
-    setRange(levels, startHour, endHour, 1);
+    const startMin = parsed.startHour * 60 + parsed.startMinute;
+    const endExclusive = parsed.endHour * 60 + parsed.endMinute + 1;
+    applyMinuteOverlapToLevels(levels, startMin, endExclusive);
   }
 
   return levels;
@@ -169,7 +272,7 @@ export function inferHomeScheduleLevels(
 
 /**
  * 日別詳細画面向けの、ざっくり予定リスト。
- * ホームの濃淡推測ロジックと同じ前提で、編集可能な初期候補として使う。
+ * ホームの濃淡推測と整合（開成は授業 8:30 開始・睡眠 0〜7 時）。
  */
 export function inferDailyPlanItems(
   d: Date,
@@ -182,37 +285,40 @@ export function inferDailyPlanItems(
   const isSummer = month >= 4 && month <= 10;
   const out: InferredPlanItem[] = [];
 
-  out.push({ title: "睡眠", startHour: 0, endHour: 6 });
+  out.push(legacyHourInclusiveToSpan("睡眠", 0, 6));
 
   const isWeekday = weekday >= 1 && weekday <= 5;
   const isSaturday = weekday === 6;
   if (isKaisei && (isWeekday || isSaturday)) {
-    out.push({ title: "通学・準備", startHour: 7, endHour: 8 });
+    out.push(legacyHourInclusiveToSpan("家→学校", 7, 8));
     if (isSummer) {
       if (weekday === 3) {
-        out.push({ title: "学校（開成）8:10-15:00", startHour: 8, endHour: 15 });
+        out.push(spanFromClock("学校（開成）8:30-15:20", 8, 30, 15, 20));
       } else if (isSaturday) {
-        out.push({ title: "学校（開成・土曜4限）8:10-12:00", startHour: 8, endHour: 12 });
+        out.push(spanFromClock("学校（開成・土曜4限）8:30-12:20", 8, 30, 12, 20));
       } else {
-        out.push({ title: "学校（開成）8:10-14:30", startHour: 8, endHour: 14 });
+        out.push(spanFromClock("学校（開成）8:30-14:50", 8, 30, 14, 50));
       }
     } else if (weekday === 3) {
-      out.push({ title: "学校（開成）8:20-15:10", startHour: 8, endHour: 15 });
+      out.push(spanFromClock("学校（開成）8:30-15:20", 8, 30, 15, 20));
     } else if (isSaturday) {
-      out.push({ title: "学校（開成・土曜4限）8:20-12:10", startHour: 8, endHour: 12 });
+      out.push(spanFromClock("学校（開成・土曜4限）8:30-12:20", 8, 30, 12, 20));
     } else {
-      out.push({ title: "学校（開成）8:20-14:40", startHour: 8, endHour: 14 });
+      out.push(spanFromClock("学校（開成）8:30-14:50", 8, 30, 14, 50));
     }
-    out.push({ title: "移動", startHour: 15, endHour: 16 });
+    out.push(legacyHourInclusiveToSpan("学校→家", 15, 16));
   } else if (isWeekday) {
-    out.push({ title: "通学・準備", startHour: 7, endHour: 8 });
-    out.push({ title: "学校", startHour: 9, endHour: 15 });
-    out.push({ title: "移動", startHour: 16, endHour: 16 });
+    out.push(legacyHourInclusiveToSpan("家→学校", 7, 8));
+    out.push(legacyHourInclusiveToSpan("学校", 9, 15));
+    out.push(legacyHourInclusiveToSpan("学校→家", 16, 16));
   }
 
   const club = profile.club;
-  if (club && club !== "帰宅部" && (weekday === 2 || weekday === 4)) {
-    out.push({ title: `部活（${club}）`, startHour: 16, endHour: 18 });
+  const clubResolved = decodeClubScheduleResolved(club);
+  if (clubResolved) {
+    out.push(...clubSpansForDayResolved(weekday, clubResolved));
+  } else if (club && club !== "帰宅部" && (weekday === 2 || weekday === 4)) {
+    out.push(legacyHourInclusiveToSpan(EXTRACURRICULAR_PLAN_TITLE, 16, 18));
   }
 
   let slots = [profile.englishSlots, profile.mathSlots].filter(Boolean) as string[];
@@ -222,7 +328,9 @@ export function inferDailyPlanItems(
   for (const slot of slots) {
     const parsed = parseJukuSlot(slot);
     if (!parsed || parsed.weekday !== weekday) continue;
-    out.push({ title: "鉄緑会", startHour: parsed.startHour, endHour: parsed.endHour });
+    out.push(
+      spanFromClock("鉄緑会", parsed.startHour, parsed.startMinute, parsed.endHour, parsed.endMinute)
+    );
   }
 
   return out;

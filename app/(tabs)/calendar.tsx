@@ -1,9 +1,22 @@
-import { useMemo, useState } from "react";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { useMemo, useState, useCallback } from "react";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { View, Text, ScrollView, Pressable, Modal } from "react-native";
+import { Plus, ChevronLeft, ChevronRight } from "lucide-react-native";
 import { BACKGROUND } from "@/constants/theme";
-import { useTasks, makeDateKey } from "@/context/TasksContext";
+import { useTasks, makeDateKey, getTodayKey } from "@/context/TasksContext";
 import { useRouter } from "expo-router";
+import { QuickCreateModal } from "@/components/QuickCreateModal";
+import { AibouCompanionFab } from "@/components/AibouCompanionFab";
+import { getCompanionFabBottom, getPlusFabBottom } from "@/lib/companionFabLayout";
+import { taskTitleWithSegment } from "@/lib/taskSegmentLabel";
+import { useHomeSchedule, type DayPlanItem } from "@/context/HomeScheduleContext";
+import {
+  planDisplayAllDay,
+  shouldOmitPlanFromCalendarCell,
+  sortPlansForCalendarCell,
+} from "@/lib/planDisplay";
+import { planTitleShortDisplay } from "@/lib/planTitleDisplay";
+import { PlanEditorModal } from "@/components/PlanEditorModal";
 
 type DayCell = {
   date: number;
@@ -39,6 +52,9 @@ function buildMonth(year: number, month0: number): DayCell[] {
 
 export default function CalendarScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const plusFabBottom = getPlusFabBottom(insets.bottom);
+  const companionFabBottom = getCompanionFabBottom(insets.bottom);
   const baseToday = new Date();
   const [monthOffset, setMonthOffset] = useState(0);
   const viewDate = new Date(
@@ -49,7 +65,22 @@ export default function CalendarScreen() {
   const year = viewDate.getFullYear();
   const month0 = viewDate.getMonth();
   const cells = buildMonth(year, month0);
-  const { tasks } = useTasks();
+  const { tasks, pendingAiQuestions } = useTasks();
+  const { getPlans, ensureDayPlans, updatePlan, deletePlan, addPlan } = useHomeSchedule();
+  const [planEditorOpen, setPlanEditorOpen] = useState(false);
+  const [planEditorDateKey, setPlanEditorDateKey] = useState("");
+  const [planEditorPlan, setPlanEditorPlan] = useState<DayPlanItem | null>(null);
+
+  const openPlanEditor = useCallback(
+    (dk: string, p: DayPlanItem) => {
+      ensureDayPlans(dk);
+      setPlanEditorDateKey(dk);
+      setPlanEditorPlan(p);
+      setPlanEditorOpen(true);
+    },
+    [ensureDayPlans]
+  );
+  const [fabOpen, setFabOpen] = useState(false);
   const [yearMonthPickerVisible, setYearMonthPickerVisible] = useState(false);
   const [pickerYear, setPickerYear] = useState(year);
   const [pickerMonth0, setPickerMonth0] = useState(month0);
@@ -90,34 +121,66 @@ export default function CalendarScreen() {
 
   return (
     <SafeAreaView
-      style={{ flex: 1, backgroundColor: BACKGROUND }}
+      style={{ flex: 1, backgroundColor: BACKGROUND, position: "relative" }}
       edges={["top"]}
     >
-      <View style={{ flex: 1, paddingHorizontal: 12, paddingTop: 16 }}>
-        {/* ヘッダー: 年月 */}
-        <Pressable
-          onPress={openYearMonthPicker}
-          style={{ marginBottom: 8, alignSelf: "flex-start" }}
+      <View style={{ flex: 1, paddingHorizontal: 14, paddingTop: 16 }}>
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            flexWrap: "wrap",
+            columnGap: 8,
+            marginBottom: 8,
+          }}
         >
-          <Text
-            style={{
-              fontSize: 18,
-              fontWeight: "600",
-              color: "#0f172a",
-            }}
-          >
-            {year}年 {month0 + 1}月
-          </Text>
-          <Text
-            style={{
-              fontSize: 11,
-              color: "#6b7280",
-              marginTop: 2,
-            }}
-          >
-            タップして年月を変更
-          </Text>
-        </Pressable>
+          <Pressable onPress={openYearMonthPicker} hitSlop={8} accessibilityLabel="年月を選ぶ">
+            <Text
+              style={{
+                fontSize: 20,
+                fontWeight: "700",
+                color: "#0f172a",
+                letterSpacing: -0.3,
+              }}
+            >
+              {year}年 {month0 + 1}月
+            </Text>
+          </Pressable>
+          <View style={{ flexDirection: "row", alignItems: "center", columnGap: 4 }}>
+            <Pressable
+              onPress={() => setMonthOffset((o) => o - 1)}
+              accessibilityLabel="前の月"
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 10,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: "#f1f5f9",
+                borderWidth: 1,
+                borderColor: "#e2e8f0",
+              }}
+            >
+              <ChevronLeft size={22} color="#334155" />
+            </Pressable>
+            <Pressable
+              onPress={() => setMonthOffset((o) => o + 1)}
+              accessibilityLabel="次の月"
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 10,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: "#f1f5f9",
+                borderWidth: 1,
+                borderColor: "#e2e8f0",
+              }}
+            >
+              <ChevronRight size={22} color="#334155" />
+            </Pressable>
+          </View>
+        </View>
 
         {/* 曜日ヘッダー */}
         <View style={{ flexDirection: "row", marginBottom: 4 }}>
@@ -155,15 +218,27 @@ export default function CalendarScreen() {
                       ? makeDateKey(year, month0, cell.date)
                       : "";
                   const cellTasks = dateKey ? tasksByDate[dateKey] ?? [] : [];
-                  const shown = cellTasks.slice(0, 4);
-                  const rest = cellTasks.length - shown.length;
+                  const cellPlans = dateKey
+                    ? sortPlansForCalendarCell(
+                        getPlans(dateKey).filter((p) => !shouldOmitPlanFromCalendarCell(p))
+                      )
+                    : [];
+                  const maxBarsPerDay = 3;
+                  const shownPlans = cellPlans.slice(
+                    0,
+                    Math.min(cellPlans.length, maxBarsPerDay)
+                  );
+                  const taskSlots = Math.max(0, maxBarsPerDay - shownPlans.length);
+                  const shownTasks = cellTasks.slice(0, taskSlots);
+                  const restHidden =
+                    cellPlans.length + cellTasks.length - shownPlans.length - shownTasks.length;
 
                   return (
                     <Pressable
                       key={colIndex}
                       onPress={() => handleDayPress(cell)}
                       style={{
-                        height: 80,
+                        minHeight: 100,
                         flex: 1,
                         borderBottomWidth: 1,
                         borderRightWidth: colIndex === 6 ? 0 : 1,
@@ -173,7 +248,7 @@ export default function CalendarScreen() {
                       }}
                     >
                       {cell.isCurrentMonth && (
-                        <View style={{ flex: 1 }}>
+                        <View style={{ flex: 1 }} pointerEvents="box-none">
                           <Text
                             style={{
                               fontSize: 12,
@@ -192,37 +267,69 @@ export default function CalendarScreen() {
                               marginTop: 4,
                               flex: 1,
                               flexDirection: "column",
-                              rowGap: 4,
+                              rowGap: 3,
                             }}
                           >
-                            {shown.map((t) => (
+                            {shownPlans.map((p) => {
+                              const ad = planDisplayAllDay(p);
+                              return (
+                                <Pressable
+                                  key={p.id}
+                                  onPress={() => openPlanEditor(dateKey, p)}
+                                  style={{
+                                    borderRadius: 6,
+                                    backgroundColor: ad ? "#1e40af" : "#dbeafe",
+                                    paddingHorizontal: 5,
+                                    paddingVertical: 2,
+                                    minHeight: 16,
+                                    justifyContent: "center",
+                                    borderWidth: ad ? 0 : 1,
+                                    borderColor: "#bfdbfe",
+                                  }}
+                                >
+                                  <Text
+                                    style={{
+                                      fontSize: 9,
+                                      color: ad ? "#f8fafc" : "#1e3a8a",
+                                      fontWeight: "700",
+                                    }}
+                                    numberOfLines={1}
+                                  >
+                                    {planTitleShortDisplay(p.title)}
+                                  </Text>
+                                  {null}
+                                </Pressable>
+                              );
+                            })}
+                            {shownTasks.map((t) => (
                               <View
                                 key={t.id}
                                 style={{
                                   borderRadius: 6,
-                                  backgroundColor: t.completed
-                                    ? "#64748b"
-                                    : "#e0f2fe",
+                                  backgroundColor: t.completed ? "#1d4ed8" : "#ffffff",
                                   paddingHorizontal: 6,
                                   paddingVertical: 2,
                                   minHeight: 16,
                                   justifyContent: "center",
+                                  borderWidth: 1,
+                                  borderColor: t.completed ? "#1e3a8a" : "#cbd5e1",
                                 }}
                               >
                                 <Text
                                   style={{
                                     fontSize: 9,
-                                    color: t.completed ? "#ffffff" : "#0369a1",
+                                    color: t.completed ? "#ffffff" : "#334155",
+                                    fontWeight: t.completed ? "800" : "600",
                                   }}
                                   numberOfLines={1}
                                 >
-                                  {t.title}
+                                  {taskTitleWithSegment(t.title, t)}
                                 </Text>
                               </View>
                             ))}
-                            {rest > 0 && (
+                            {restHidden > 0 && (
                               <Text style={{ fontSize: 10, color: "#64748b", marginTop: 2 }}>
-                                +{rest}
+                                +{restHidden}
                               </Text>
                             )}
                           </View>
@@ -237,9 +344,47 @@ export default function CalendarScreen() {
         </ScrollView>
 
         <Text style={{ marginTop: 10, fontSize: 11, color: "#64748b" }}>
-          日付をタップすると、その日の「予定」と「タスク」の詳細を開けます。
+          各マスは上から「予定」「タスク」の順で、合わせて最大3件まで表示します（予定を優先）。それ以上は「+N」で件数のみ示します。予定をタップすると編集が開きます（終日は濃色、時間指定は薄色）。日付の空きをタップするとその日の詳細へ移動します。
         </Text>
       </View>
+
+      <PlanEditorModal
+        visible={planEditorOpen}
+        onClose={() => {
+          setPlanEditorOpen(false);
+          setPlanEditorPlan(null);
+        }}
+        dateKey={planEditorDateKey || getTodayKey()}
+        initialPlan={planEditorPlan}
+        onSave={(c) => {
+          if (!planEditorPlan || !planEditorDateKey) return;
+          ensureDayPlans(planEditorDateKey);
+          ensureDayPlans(c.dateKey);
+          const payload = {
+            title: c.title,
+            startMin: c.startMin,
+            endMinExclusive: c.endMinExclusive,
+            allDay: c.allDay,
+          };
+          if (c.dateKey !== planEditorDateKey) {
+            deletePlan(planEditorDateKey, planEditorPlan.id);
+            addPlan(c.dateKey, payload);
+          } else {
+            updatePlan(planEditorDateKey, planEditorPlan.id, payload);
+          }
+          setPlanEditorOpen(false);
+          setPlanEditorPlan(null);
+        }}
+        onDelete={
+          planEditorPlan && planEditorDateKey
+            ? () => {
+                deletePlan(planEditorDateKey, planEditorPlan.id);
+                setPlanEditorOpen(false);
+                setPlanEditorPlan(null);
+              }
+            : undefined
+        }
+      />
 
       {/* 年月ピッカー */}
       <Modal
@@ -420,6 +565,34 @@ export default function CalendarScreen() {
         </View>
       </Modal>
 
+      <Pressable
+        onPress={() => setFabOpen(true)}
+        accessibilityLabel="予定またはタスクを追加"
+        style={{
+          position: "absolute",
+          right: 20,
+          bottom: plusFabBottom,
+          width: 56,
+          height: 56,
+          borderRadius: 28,
+          backgroundColor: "#2563eb",
+          alignItems: "center",
+          justifyContent: "center",
+          shadowColor: "#000",
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.25,
+          shadowRadius: 4,
+          elevation: 6,
+        }}
+      >
+        <Plus size={28} color="#ffffff" strokeWidth={2.5} />
+      </Pressable>
+      <AibouCompanionFab
+        bottom={companionFabBottom}
+        badgeCount={pendingAiQuestions.length}
+        onPress={() => router.push("/replan-companion")}
+      />
+      <QuickCreateModal visible={fabOpen} onClose={() => setFabOpen(false)} defaultDateKey={getTodayKey()} />
     </SafeAreaView>
   );
 }

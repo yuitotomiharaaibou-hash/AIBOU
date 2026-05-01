@@ -30,8 +30,21 @@ import {
   hearingForAuto,
   type TomorrowHearing,
 } from "@/lib/tomorrowPlan";
+import {
+  requestAiTomorrowHearing,
+  type AiClarifyQuestion,
+  type AiTomorrowPlanResult,
+  type CompanionAiChain,
+  type HomePlanOp,
+} from "@/lib/aiTomorrowPlanner";
+import { applyAiTaskAdjustments } from "@/lib/applyAiTaskAdjustments";
+import { applyAiTaskCreates } from "@/lib/applyAiTaskCreates";
+import { applyTaskMonthClear, applyTaskDeletesByIds } from "@/lib/applyAiTaskBulk";
+import { mergeHomePlanOpsWithFallback } from "@/lib/companionHomePlanFallback";
 
 export type Subject = "english" | "math";
+
+export type TaskImportance = "A" | "B" | "C";
 
 export type Task = {
   id: string; // タスクA〜JなどのID
@@ -41,6 +54,19 @@ export type Task = {
   hour: number; // 0-23
   completed: boolean;
   pinned?: boolean;
+  /** 重要度（未設定時は UI では B 扱い） */
+  importance?: TaskImportance;
+  /** 期限 YYYY-MM-DD（任意） */
+  dueDate?: string;
+  /** 開始日 YYYY-MM-DD（詳細・未設定時は date と同義扱い） */
+  startDate?: string;
+  /** 終了日 YYYY-MM-DD（詳細・未設定時は dueDate と同義扱い） */
+  endDate?: string;
+  /** 備考 */
+  notes?: string;
+  /** 同一タスクを複数コマに分けたときの位置（1 始まり）と総数（2 以上で UI に（i/n）） */
+  segmentIndex?: number;
+  segmentTotal?: number;
 };
 
 export type ReplanLog = {
@@ -61,11 +87,26 @@ export type PendingPlanProposal = {
   logs: ReplanLog[];
 };
 
+export type ReplanInsight = {
+  shortReason: string;
+  shortChange: string;
+  detailLines: string[];
+  phaseNotes: string[];
+  restartFrom: string;
+  source: "ai" | "fallback";
+  modelUsed?: string;
+  generatedAt: string;
+};
+
 export type TasksContextValue = {
   tasks: Task[];
   replanLogs: ReplanLog[];
   pendingProposal: PendingPlanProposal | null;
   proposalNotice: string | null;
+  setProposalNotice: (v: string | null) => void;
+  isAiPlanning: boolean;
+  lastReplanInsight: ReplanInsight | null;
+  pendingAiQuestions: AiClarifyQuestion[];
   plannerPreference: PlannerPreference;
   toggleTask: (id: string) => void;
   updateTaskSchedule: (id: string, date: string, hour: number) => void;
@@ -83,14 +124,135 @@ export type TasksContextValue = {
     hourNow: number;
     enabled: boolean;
   }) => void;
+  /** 今日の埋まり具合からヒアリングを自動決定し、明日の計画を即反映（確認ステップなし） */
+  commitTomorrowPlanNow: (input: {
+    todayKey: string;
+    tomorrowKey: string;
+    todayBusySlotCount: number;
+    /** プロフィール・タスク事実など（相棒フローから渡す） */
+    sessionContext?: string;
+    /** 直前の prefetchCompanionAiPlan と同じ入力なら再呼び出ししない */
+    reusePrefetchDraft?: boolean;
+    /**
+     * 承認チェックで加工した案をそのまま反映（指定時は prefetch の ref を使わない）
+     */
+    prefetchedPlanOverride?: AiTomorrowPlanResult | null;
+    /** AI が返した home_plan_ops をホーム予定に反映（相棒から渡す） */
+    applyHomePlanOps?: (ops: HomePlanOp[]) => void;
+    /**
+     * true（既定）: 「今日以前→明日」ローカル一括ロールをしない（AI の JSON のみ反映）。
+     * false: 深夜の自動処理など限定的にローカルロールを併用。
+     */
+    skipLocalTomorrowRoll?: boolean;
+  }) => Promise<boolean>;
+  companionPlanDraft: AiTomorrowPlanResult | null;
+  prefetchCompanionAiPlan: (input: {
+    todayKey: string;
+    tomorrowKey: string;
+    todayBusySlotCount: number;
+    sessionContext: string;
+  }) => Promise<{ ok: boolean; error?: string }>;
   approvePendingPlan: () => void;
   rejectPendingPlan: () => void;
   autoReplanIfNeeded: (referenceDate?: string) => void;
+  saveAiQuestionAnswers: (answers: Record<string, string>) => void;
+  clearAiQuestions: () => void;
   /** KOKO2 全タスクを維持したまま、プロフィールの空き枠に合わせて日付・時刻を再配分 */
   applyKoko2TaskDistribution: (profile: Partial<ProfileState>, force?: boolean) => void;
 };
 
 const TasksContext = createContext<TasksContextValue | undefined>(undefined);
+
+function buildReplanInsight(input: {
+  source: "ai" | "fallback";
+  modelUsed?: string;
+  reason?: string;
+  changeSummary?: string;
+  phaseNotes?: string[];
+  companionChain?: CompanionAiChain;
+  hearing: TomorrowHearing;
+  movedCount: number;
+}): ReplanInsight {
+  const busyLabel = input.hearing.busy === 2 ? "高" : input.hearing.busy === 1 ? "中" : "低";
+  const leanLabel =
+    input.hearing.subjectLean === "english"
+      ? "英語寄せ"
+      : input.hearing.subjectLean === "math"
+        ? "数学寄せ"
+        : "バランス";
+  const chainLines: string[] = [];
+  const cc = input.companionChain;
+  if (cc) {
+    if (cc.execution.trim()) chainLines.push(`実行: ${cc.execution.trim()}`);
+    if (cc.goal.trim()) chainLines.push(`目標: ${cc.goal.trim()}`);
+    if (cc.information.trim()) chainLines.push(`情報: ${cc.information.trim()}`);
+    if (cc.placement.trim()) chainLines.push(`立案: ${cc.placement.trim()}`);
+  }
+  return {
+    shortReason:
+      (input.reason ??
+        `負荷${busyLabel}・${leanLabel}として翌日へ${input.movedCount}件を再配置`) +
+      (input.source === "ai" && input.modelUsed ? `（model: ${input.modelUsed}）` : ""),
+    shortChange:
+      input.changeSummary ??
+      `未完了${input.movedCount}件を明日の空きへ再配置（${leanLabel}）`,
+    detailLines: [
+      ...chainLines,
+      `再立案開始点: 実行記録→確認→改善→明日再配置`,
+      `負荷判定: ${busyLabel}`,
+      `科目方針: ${leanLabel}`,
+      `開始遅め: ${input.hearing.lateStart ? "はい" : "いいえ"}`,
+      `移動件数: ${input.movedCount}件`,
+      `推論ソース: ${input.source === "ai" ? "AI接続" : "ローカルフォールバック"}`,
+      ...(input.source === "ai" && input.modelUsed ? [`モデル: ${input.modelUsed}`] : []),
+    ],
+    phaseNotes:
+      input.phaseNotes && input.phaseNotes.length > 0
+        ? input.phaseNotes
+        : [
+            "確認: 未完了と負荷を確認",
+            "改善: 明日の開始時刻と科目偏りを補正",
+            "再配置: 空き枠へ優先タスクを割当",
+          ],
+    restartFrom: "confirm-and-improve",
+    source: input.source,
+    modelUsed: input.modelUsed,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+function inferTaskBulkFromQa(input: {
+  qaContext: string;
+  tasks: Task[];
+  todayKey: string;
+  tomorrowKey: string;
+}): { taskMonthClear?: { yearMonth: string; includePinned: boolean }; taskDeletes?: string[] } {
+  const text = (input.qaContext ?? "").replace(/\s+/g, " ").trim();
+  if (!text) return {};
+  const asksDelete = /削除|消して|消す|クリア|空に|リセット|なくして/.test(text);
+  const asksAll = /全部|すべて|全て/.test(text);
+  const mentionsTask = /タスク|課題|宿題|予定/.test(text);
+  if (!(asksDelete && mentionsTask)) return {};
+
+  const ym = (() => {
+    const iso = text.match(/(20\d{2})-(0[1-9]|1[0-2])/);
+    if (iso) return `${iso[1]}-${iso[2]}`;
+    const ja = text.match(/(20\d{2})\s*年\s*(1[0-2]|0?[1-9])\s*月/);
+    if (ja) return `${ja[1]}-${String(parseInt(ja[2], 10)).padStart(2, "0")}`;
+    return "";
+  })();
+  if (ym) return { taskMonthClear: { yearMonth: ym, includePinned: true } };
+
+  const inDayIds = (dateKey: string) =>
+    input.tasks.filter((t) => t.date === dateKey).map((t) => t.id);
+  if (/明日|翌日|あした/.test(text)) return { taskDeletes: inDayIds(input.tomorrowKey) };
+  if (/今日|本日|きょう/.test(text)) return { taskDeletes: inDayIds(input.todayKey) };
+
+  if (asksAll) {
+    return { taskDeletes: input.tasks.map((t) => t.id) };
+  }
+  return {};
+}
 
 export function makeDateKey(year: number, month0: number, day: number): string {
   const mm = String(month0 + 1).padStart(2, "0");
@@ -110,6 +272,9 @@ export function TasksProvider({ children }: { children: ReactNode }) {
   const [replanLogs, setReplanLogs] = useState<ReplanLog[]>([]);
   const [pendingProposal, setPendingProposal] = useState<PendingPlanProposal | null>(null);
   const [proposalNotice, setProposalNotice] = useState<string | null>(null);
+  const [isAiPlanning, setIsAiPlanning] = useState(false);
+  const [lastReplanInsight, setLastReplanInsight] = useState<ReplanInsight | null>(null);
+  const [pendingAiQuestions, setPendingAiQuestions] = useState<AiClarifyQuestion[]>([]);
   const [plannerUserId, setPlannerUserId] = useState("default");
   const [plannerPreference, setPlannerPreference] = useState<PlannerPreference>(
     createDefaultPreference()
@@ -122,6 +287,67 @@ export function TasksProvider({ children }: { children: ReactNode }) {
   const pendingProposalRef = useRef<PendingPlanProposal | null>(null);
   pendingProposalRef.current = pendingProposal;
   const lastKoko2DistSigRef = useRef<string | null>(null);
+  const aiQaContextRef = useRef<Record<string, string>>({});
+  const companionDraftRef = useRef<{ result: AiTomorrowPlanResult; fingerprint: string } | null>(
+    null
+  );
+  const [companionPlanDraft, setCompanionPlanDraft] = useState<AiTomorrowPlanResult | null>(null);
+
+  const buildCompanionFingerprint = useCallback(
+    (parts: {
+      todayKey: string;
+      tomorrowKey: string;
+      todayBusySlotCount: number;
+      qaContext: string;
+      sessionContext: string;
+    }) => JSON.stringify(parts),
+    []
+  );
+
+  const aiQaPrompt = () => {
+    const rows = Object.entries(aiQaContextRef.current)
+      .map(([k, v]) => [k, v.trim()] as const)
+      .filter(([, v]) => v.length > 0);
+    if (rows.length === 0) return "";
+    return rows.map(([k, v]) => `${k}: ${v}`).join("\n");
+  };
+
+  const prefetchCompanionAiPlan = useCallback(
+    async (input: {
+      todayKey: string;
+      tomorrowKey: string;
+      todayBusySlotCount: number;
+      sessionContext: string;
+    }): Promise<{ ok: boolean; error?: string }> => {
+      const qaContext = aiQaPrompt();
+      const fingerprint = buildCompanionFingerprint({
+        todayKey: input.todayKey,
+        tomorrowKey: input.tomorrowKey,
+        todayBusySlotCount: input.todayBusySlotCount,
+        qaContext,
+        sessionContext: input.sessionContext,
+      });
+      const fallback = hearingForAuto(input.todayBusySlotCount, plannerPrefRef.current);
+      try {
+        const ai = await requestAiTomorrowHearing({
+          tasks: tasksRef.current,
+          todayKey: input.todayKey,
+          tomorrowKey: input.tomorrowKey,
+          todayBusySlotCount: input.todayBusySlotCount,
+          fallback,
+          qaContext,
+          sessionContext: input.sessionContext,
+        });
+        companionDraftRef.current = { result: ai, fingerprint };
+        setCompanionPlanDraft(ai);
+        if (ai.source === "fallback" && ai.error) return { ok: false, error: ai.error };
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : "prefetch失敗" };
+      }
+    },
+    [buildCompanionFingerprint]
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -210,7 +436,14 @@ export function TasksProvider({ children }: { children: ReactNode }) {
           date: input.date,
           hour: input.hour,
           completed: false,
-          pinned: false,
+          pinned: input.pinned ?? false,
+          importance: input.importance ?? "B",
+          dueDate: input.dueDate,
+          startDate: input.startDate,
+          endDate: input.endDate,
+          notes: input.notes,
+          segmentIndex: input.segmentIndex,
+          segmentTotal: input.segmentTotal,
         };
         return [task, ...prev];
       });
@@ -275,7 +508,7 @@ export function TasksProvider({ children }: { children: ReactNode }) {
     if (out.logs.length === 0) {
       setPendingProposal(null);
       setProposalNotice("明日に移せる未完了タスクがありません");
-      setTimeout(() => setProposalNotice(null), 3200);
+      setTimeout(() => setProposalNotice(null), 12000);
       return;
     }
     setPendingProposal({
@@ -295,11 +528,48 @@ export function TasksProvider({ children }: { children: ReactNode }) {
     }) => {
       if (!input.enabled || input.hourNow < 5) return;
       void (async () => {
+        setPendingAiQuestions([]);
         const last = await simpleStorageGet("aibou.tomorrow.autoLast");
         if (last === input.tomorrowKey) return;
-        const hearing = hearingForAuto(input.todayBusySlotCount, plannerPrefRef.current);
-        const out = buildTomorrowPlanProposal({
+        const fallback = hearingForAuto(input.todayBusySlotCount, plannerPrefRef.current);
+        const qaContext = aiQaPrompt();
+        const ai = await requestAiTomorrowHearing({
           tasks: tasksRef.current,
+          todayKey: input.todayKey,
+          tomorrowKey: input.tomorrowKey,
+          todayBusySlotCount: input.todayBusySlotCount,
+          fallback,
+          qaContext,
+          sessionContext: "",
+        });
+        if (ai.questions && ai.questions.length > 0) {
+          setPendingAiQuestions(ai.questions);
+          setProposalNotice("AIから確認質問があります。回答後に再実行してください");
+          return;
+        }
+        const hearing = ai.hearing;
+        let t0 = tasksRef.current;
+        const inferredBulk = inferTaskBulkFromQa({
+          qaContext,
+          tasks: t0,
+          todayKey: input.todayKey,
+          tomorrowKey: input.tomorrowKey,
+        });
+        const mergedTaskMonthClear = ai.taskMonthClear ?? inferredBulk.taskMonthClear;
+        const mergedTaskDeletes = Array.from(
+          new Set([...(ai.taskDeletes ?? []), ...(inferredBulk.taskDeletes ?? [])])
+        );
+        let removedBulk = 0;
+        const mc = applyTaskMonthClear(t0, mergedTaskMonthClear);
+        t0 = mc.tasks;
+        removedBulk += mc.removed;
+        const td = applyTaskDeletesByIds(t0, mergedTaskDeletes);
+        t0 = td.tasks;
+        removedBulk += td.removed;
+        const afterCreate = applyAiTaskCreates(t0, ai.taskCreates);
+        const afterIntent = applyAiTaskAdjustments(afterCreate.tasks, ai.taskAdjustments);
+        const out = buildTomorrowPlanProposal({
+          tasks: afterIntent.tasks,
           todayKey: input.todayKey,
           tomorrowKey: input.tomorrowKey,
           preference: plannerPrefRef.current,
@@ -307,13 +577,185 @@ export function TasksProvider({ children }: { children: ReactNode }) {
           reason: "tomorrow-auto",
         });
         await simpleStorageSet("aibou.tomorrow.autoLast", input.tomorrowKey);
-        if (out.logs.length === 0) return;
+        const allLogs = [...afterIntent.logs, ...out.logs];
+        const homeOpN = ai.homePlanOps?.length ?? 0;
+        if (
+          allLogs.length === 0 &&
+          afterCreate.added.length === 0 &&
+          removedBulk === 0 &&
+          homeOpN === 0
+        )
+          return;
         setTasks(out.tasks);
-        setReplanLogs((logs) => [...out.logs, ...logs].slice(0, 300));
+        setReplanLogs((logs) => [...allLogs, ...logs].slice(0, 300));
+        setLastReplanInsight(
+          buildReplanInsight({
+            source: ai.source,
+            modelUsed: ai.modelUsed,
+            reason: ai.reason,
+            changeSummary: ai.changeSummary,
+            phaseNotes: ai.phaseNotes,
+            companionChain: ai.companionChain,
+            hearing,
+            movedCount: allLogs.length + afterCreate.added.length + removedBulk + homeOpN,
+          })
+        );
         regenerateSessionRef.current = 0;
       })();
     },
     []
+  );
+
+  const commitTomorrowPlanNow = useCallback(
+    async (input: {
+      todayKey: string;
+      tomorrowKey: string;
+      todayBusySlotCount: number;
+      sessionContext?: string;
+      reusePrefetchDraft?: boolean;
+      prefetchedPlanOverride?: AiTomorrowPlanResult | null;
+      applyHomePlanOps?: (ops: HomePlanOp[]) => void;
+      skipLocalTomorrowRoll?: boolean;
+    }) => {
+      setProposalNotice(null);
+      setIsAiPlanning(true);
+      setPendingAiQuestions([]);
+      setProposalNotice("AIが明日の修正を考えています…");
+      if (pendingProposalRef.current) {
+        setPendingProposal(null);
+      }
+      try {
+        const fallback = hearingForAuto(input.todayBusySlotCount, plannerPrefRef.current);
+        const qaContext = aiQaPrompt();
+        const sessionContext = input.sessionContext ?? "";
+        const fingerprint = buildCompanionFingerprint({
+          todayKey: input.todayKey,
+          tomorrowKey: input.tomorrowKey,
+          todayBusySlotCount: input.todayBusySlotCount,
+          qaContext,
+          sessionContext,
+        });
+        let ai: AiTomorrowPlanResult;
+        if (input.prefetchedPlanOverride) {
+          ai = input.prefetchedPlanOverride;
+        } else if (input.reusePrefetchDraft && companionDraftRef.current?.fingerprint === fingerprint) {
+          ai = companionDraftRef.current.result;
+          companionDraftRef.current = null;
+          setCompanionPlanDraft(null);
+        } else {
+          ai = await requestAiTomorrowHearing({
+            tasks: tasksRef.current,
+            todayKey: input.todayKey,
+            tomorrowKey: input.tomorrowKey,
+            todayBusySlotCount: input.todayBusySlotCount,
+            fallback,
+            qaContext,
+            sessionContext,
+          });
+        }
+        if (ai.questions && ai.questions.length > 0) {
+          setPendingAiQuestions(ai.questions);
+          setProposalNotice("AIから確認質問があります。回答後に再実行してください");
+          setTimeout(() => setProposalNotice(null), 12000);
+          return false;
+        }
+        const hearing = ai.hearing;
+        let t0 = tasksRef.current;
+        const inferredBulk = inferTaskBulkFromQa({
+          qaContext,
+          tasks: t0,
+          todayKey: input.todayKey,
+          tomorrowKey: input.tomorrowKey,
+        });
+        const mergedTaskMonthClear = ai.taskMonthClear ?? inferredBulk.taskMonthClear;
+        const mergedTaskDeletes = Array.from(
+          new Set([...(ai.taskDeletes ?? []), ...(inferredBulk.taskDeletes ?? [])])
+        );
+        let removedBulk = 0;
+        const mc = applyTaskMonthClear(t0, mergedTaskMonthClear);
+        t0 = mc.tasks;
+        removedBulk += mc.removed;
+        const td = applyTaskDeletesByIds(t0, mergedTaskDeletes);
+        t0 = td.tasks;
+        removedBulk += td.removed;
+        const afterCreate = applyAiTaskCreates(t0, ai.taskCreates);
+        const afterIntent = applyAiTaskAdjustments(afterCreate.tasks, ai.taskAdjustments);
+        const skipLocalTomorrowRoll = input.skipLocalTomorrowRoll ?? true;
+        const out = skipLocalTomorrowRoll
+          ? { tasks: afterIntent.tasks, logs: [] as ReplanLog[] }
+          : buildTomorrowPlanProposal({
+              tasks: afterIntent.tasks,
+              todayKey: input.todayKey,
+              tomorrowKey: input.tomorrowKey,
+              preference: plannerPrefRef.current,
+              hearing,
+              reason: "tomorrow-tap",
+            });
+        const allLogs = [...afterIntent.logs, ...out.logs];
+        const mergedHomeOps = input.applyHomePlanOps
+          ? mergeHomePlanOpsWithFallback(
+              ai.homePlanOps,
+              qaContext,
+              input.todayKey,
+              input.tomorrowKey
+            )
+          : ai.homePlanOps ?? [];
+        const homeOpN = mergedHomeOps.length;
+        const movedOrCreate =
+          allLogs.length + afterCreate.added.length + homeOpN + removedBulk;
+        if (movedOrCreate === 0) {
+          setProposalNotice(
+            ai.source === "ai"
+              ? ai.reason
+                ? `AI判断: ${ai.reason}（今回の再配置変更はありません）${ai.modelUsed ? ` [model:${ai.modelUsed}]` : ""}`
+                : `AI判断: 今回は再配置変更なしで維持が妥当です${ai.modelUsed ? ` [model:${ai.modelUsed}]` : ""}`
+              : "明日に移せる未完了タスクがありません（今回は変更なし）"
+          );
+          setTimeout(() => setProposalNotice(null), 12000);
+          return true;
+        }
+        setTasks(out.tasks);
+        input.applyHomePlanOps?.(mergedHomeOps);
+        setReplanLogs((logs) => [...allLogs, ...logs].slice(0, 300));
+        setLastReplanInsight(
+          buildReplanInsight({
+            source: ai.source,
+            modelUsed: ai.modelUsed,
+            reason: ai.reason,
+            changeSummary: ai.changeSummary,
+            phaseNotes: ai.phaseNotes,
+            companionChain: ai.companionChain,
+            hearing,
+            movedCount: movedOrCreate,
+          })
+        );
+        regenerateSessionRef.current = 0;
+        if (ai.source === "ai") {
+          setProposalNotice(
+            ai.reason
+              ? `AI判断: ${ai.reason}${ai.modelUsed ? ` [model:${ai.modelUsed}]` : ""}`
+              : `AIが明日の再配置を提案・反映しました${ai.modelUsed ? ` [model:${ai.modelUsed}]` : ""}`
+          );
+          setTimeout(() => setProposalNotice(null), 12000);
+        } else {
+          setProposalNotice(
+            ai.error
+              ? `AI接続に失敗（${ai.error}）のため、ローカル方針で再配置しました`
+              : "AI接続なしのため、ローカル方針で再配置しました"
+          );
+          setTimeout(() => setProposalNotice(null), 12000);
+        }
+        setPlannerPreference((prev) => {
+          const learned = learnFromEvent(prev, { kind: "accept-plan" });
+          plannerPrefRef.current = learned;
+          return learned;
+        });
+        return true;
+      } finally {
+        setIsAiPlanning(false);
+      }
+    },
+    [buildCompanionFingerprint]
   );
 
   const approvePendingPlan = useCallback(() => {
@@ -366,6 +808,22 @@ export function TasksProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const saveAiQuestionAnswers = useCallback((answers: Record<string, string>) => {
+    const merged: Record<string, string> = { ...aiQaContextRef.current };
+    for (const [k, v] of Object.entries(answers)) {
+      const t = (v ?? "").trim();
+      if (t) merged[k] = t;
+    }
+    aiQaContextRef.current = merged;
+    setPendingAiQuestions([]);
+    setProposalNotice("回答を保存しました。次の日ボタンでもう一度AI再立案できます");
+    setTimeout(() => setProposalNotice(null), 12000);
+  }, []);
+
+  const clearAiQuestions = useCallback(() => {
+    setPendingAiQuestions([]);
+  }, []);
+
   const applyKoko2TaskDistribution = useCallback(
     (profile: Partial<ProfileState>, force = false) => {
       const sig = profileScheduleSignature(profile);
@@ -380,7 +838,19 @@ export function TasksProvider({ children }: { children: ReactNode }) {
         return distributed.map((t) => {
           const old = prevById.get(t.id);
           if (!old) return t;
-          return { ...t, completed: old.completed, pinned: old.pinned };
+          return {
+            ...t,
+            completed: old.completed,
+            pinned: old.pinned,
+            title: old.title,
+            importance: old.importance,
+            dueDate: old.dueDate,
+            startDate: old.startDate,
+            endDate: old.endDate,
+            notes: old.notes,
+            segmentIndex: old.segmentIndex ?? t.segmentIndex,
+            segmentTotal: old.segmentTotal ?? t.segmentTotal,
+          };
         });
       });
     },
@@ -393,6 +863,12 @@ export function TasksProvider({ children }: { children: ReactNode }) {
       replanLogs,
       pendingProposal,
       proposalNotice,
+      setProposalNotice,
+      isAiPlanning,
+      lastReplanInsight,
+      companionPlanDraft,
+      prefetchCompanionAiPlan,
+      pendingAiQuestions,
       plannerPreference,
       toggleTask,
       updateTaskSchedule,
@@ -404,9 +880,12 @@ export function TasksProvider({ children }: { children: ReactNode }) {
       applySuccessTemplateFromProfile,
       proposeTomorrowPlan,
       tryAutoTomorrowPlan,
+      commitTomorrowPlanNow,
       approvePendingPlan,
       rejectPendingPlan,
       autoReplanIfNeeded,
+      saveAiQuestionAnswers,
+      clearAiQuestions,
       applyKoko2TaskDistribution,
     }),
     [
@@ -414,6 +893,12 @@ export function TasksProvider({ children }: { children: ReactNode }) {
       replanLogs,
       pendingProposal,
       proposalNotice,
+      setProposalNotice,
+      isAiPlanning,
+      lastReplanInsight,
+      companionPlanDraft,
+      prefetchCompanionAiPlan,
+      pendingAiQuestions,
       plannerPreference,
       toggleTask,
       updateTaskSchedule,
@@ -425,9 +910,12 @@ export function TasksProvider({ children }: { children: ReactNode }) {
       applySuccessTemplateFromProfile,
       proposeTomorrowPlan,
       tryAutoTomorrowPlan,
+      commitTomorrowPlanNow,
       approvePendingPlan,
       rejectPendingPlan,
       autoReplanIfNeeded,
+      saveAiQuestionAnswers,
+      clearAiQuestions,
       applyKoko2TaskDistribution,
     ]
   );

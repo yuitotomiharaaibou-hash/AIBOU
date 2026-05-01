@@ -2,21 +2,24 @@ import React, {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   ReactNode,
 } from "react";
 import { useProfile } from "@/context/ProfileContext";
+import { profilePlanSignature } from "@/lib/profilePlanSignature";
 import {
   inferHomeScheduleLevels,
   inferDailyPlanItems,
-  type InferredPlanItem,
   type ScheduleLevel,
 } from "@/lib/homeScheduleInference";
+import type { PlanSpan } from "@/lib/planTime";
 
-export type DayPlanItem = InferredPlanItem & {
+export type DayPlanItem = PlanSpan & {
   id: string;
   date: string;
+  allDay?: boolean;
 };
 
 type HomeScheduleContextValue = {
@@ -32,6 +35,8 @@ type HomeScheduleContextValue = {
     patch: Partial<Omit<DayPlanItem, "id" | "date">>
   ) => void;
   deletePlan: (dateKey: string, planId: string) => void;
+  /** その日のホーム予定をすべて削除（空配列として保持し、推測表示を上書き） */
+  clearAllPlansForDay: (dateKey: string) => void;
 };
 
 const HomeScheduleContext = createContext<HomeScheduleContextValue | undefined>(
@@ -40,11 +45,17 @@ const HomeScheduleContext = createContext<HomeScheduleContextValue | undefined>(
 
 export function HomeScheduleProvider({ children }: { children: ReactNode }) {
   const { profile } = useProfile();
+  const planProfileSig = useMemo(() => profilePlanSignature(profile), [profile]);
+
   /** ユーザーがタップした上書き（未設定のマスは推測値を使う） */
   const [overrides, setOverrides] = useState<
     Record<string, Partial<Record<number, ScheduleLevel>>>
   >({});
   const [plansByDate, setPlansByDate] = useState<Record<string, DayPlanItem[]>>({});
+
+  useEffect(() => {
+    setPlansByDate({});
+  }, [planProfileSig]);
 
   const getBase = useCallback(
     (dateKey: string) => {
@@ -124,8 +135,9 @@ export function HomeScheduleProvider({ children }: { children: ReactNode }) {
           id: `${dateKey}-plan-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           date: dateKey,
           title: input.title,
-          startHour: input.startHour,
-          endHour: input.endHour,
+          startMin: input.startMin,
+          endMinExclusive: input.endMinExclusive,
+          allDay: input.allDay,
         };
         return { ...prev, [dateKey]: [...next, item] };
       });
@@ -157,6 +169,10 @@ export function HomeScheduleProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const clearAllPlansForDay = useCallback((dateKey: string) => {
+    setPlansByDate((prev) => ({ ...prev, [dateKey]: [] }));
+  }, []);
+
   const value = useMemo(
     () => ({
       getLevel,
@@ -166,8 +182,9 @@ export function HomeScheduleProvider({ children }: { children: ReactNode }) {
       addPlan,
       updatePlan,
       deletePlan,
+      clearAllPlansForDay,
     }),
-    [getLevel, cycleLevel, getPlans, ensureDayPlans, addPlan, updatePlan, deletePlan]
+    [getLevel, cycleLevel, getPlans, ensureDayPlans, addPlan, updatePlan, deletePlan, clearAllPlansForDay]
   );
 
   return (

@@ -30,6 +30,7 @@ export default function RootLayout() {
                     <Stack.Screen name="day/[date]" options={{ headerShown: false }} />
                     <Stack.Screen name="rules" />
                     <Stack.Screen name="tomorrow-plan" options={{ headerShown: false }} />
+                    <Stack.Screen name="replan-companion" options={{ headerShown: false }} />
                   </Stack>
                   </JudgmentRulesProvider>
                 </RulesProvider>
