@@ -466,52 +466,23 @@ export async function requestAiTomorrowHearing(
     };
   }
   const prompt = [
-    "あなたは学習計画の調整AIです。",
-    "内部仕様:",
-    COMPANION_AI_SYSTEM_PROMPT,
-    "明日の再配置方針を以下のJSONだけで返してください（説明文・マークダウンフェンス禁止。1行の厳密なJSON1オブジェクトのみ）。",
-    '{"busy":0|1|2,"lateStart":boolean,"subjectLean":"english"|"math"|"balance","reason":"…","changeSummary":"…","phaseNotes":["短文"],"questions":[],"task_month_clear":{"yearMonth":"YYYY-MM","includePinned":false},"task_deletes":["既存タスクid"],"taskAdjustments":[],"taskCreates":[],"home_plan_ops":[],"companionChain":{"execution":"…","goal":"…","information":"…","placement":"…"}}',
-    "reason と changeSummary は各120文字以内。文中にASCIIのダブルクォート \" は使わない（『』や「」は可）。長文は phaseNotes に分割。",
-    "本機能は学習タスクの翌日繰越だけではない。その瞬間の最適計画: タスク日付の再配置・新規タスク・ホーム予定の整理をまとめて判断する。",
-    "相棒フローでは「今日以前の未完了を明日へ一括移動」するローカル処理はユーザーがオフにできる。5月から院試・再来月開始などは taskAdjustments で 5月以降の具体日付へ必ず落とす（明日へ寄せるだけに頼らない）。",
-    "「明日の予定を消す」「4/30の予定を消す」は home_plan_ops の clear_day。日付は sessionContext の tomorrowKey 見出しかユーザー指定日。予定削除の要望があるのに home_plan_ops が空は不適切。",
-    "home_plan_ops: ホーム画面の「予定」（sessionContext の id= 行）のみ操作。学習タスク(KOKOの id)は触らない。",
-    "home_plan_ops の op: clear_day はその日の予定をすべて削除。delete は planIds に列挙した id だけ削除。id は必ず sessionContext のホーム予定一覧と一致。",
-    "ユーザーが「明日の予定を全部消す」「当日の予定をすべて削除」等と言ったら、該当日付に clear_day を入れる。不要なら home_plan_ops は空配列。",
-    "学習タスク（KOKO）で「◯月のタスクを全部消す」「4月分をリセット」等: task_month_clear に {yearMonth:\"YYYY-MM\",includePinned:false}。ピン留めも消すなら includePinned:true。",
-    "学習タスクを個別 id で消すときは task_deletes に id の配列（一覧の id のみ）。task_month_clear と併用可。",
-    "sessionContext に月別の学習タスク件数 count が載る。reason に「未完了なし」「全削除済み」等と書く場合、その月の count=0 と矛盾しないようにすること。",
-    "companionChain は承認UI用。必ず sessionContext の事実と qaContext の要望を踏まえ、実行→目標→情報→立案の順で「なぜそう言えるか（だから）」が途切れないように書く。各フィールドは具体的な主張・対策・日付や科目名を含む日本語で、空文字は禁止。",
-    "execution: 昨日〜今日の実行事実（未完了の理由仮説・次回対策・時間帯の再配置方針など）。",
-    "goal: 望むアウトカムの再確認・熱意・達成時の便益。第三者が検証できる具体（時期・判定条件）まで落とす。文脈に既にある具体を繰り返し聞かない。",
-    "information: 足りない知識・成功者の型・外部情報が必要な論点。ここで挙げた打ち手は後段の taskCreates / taskAdjustments と一対一で対応させる（情報だけで終わらせない）。",
-    "placement: 目標を細分化したうえで、taskCreates に落とす具体行（教材・単元・演習単位がタイトルから分かる）を決め、既存タスクの日付移動（taskAdjustments）とセットで書く。粗い1行の再配置だけで終わらせない。",
-    "taskAdjustments: 既存タスクの日付/時刻を変えるときのみ。id は下の一覧の id のみ。ここに無い id を書くことの禁止が『捏造禁止』の主な意味。",
-    "taskCreates: 立案の結果として、目標達成に必要な新しい学習行を追加する。一覧が粗い（科目名だけ等）ときは情報で述べた打ち手をここに必ず反映する。subject は english または math。日付は tomorrowKey 以降。定番の教材・単元分割は一般的学習設計として出力してよい（ユーザーが口頭で言っていなくてもよい）。",
-    "taskAdjustments の id は必ず下の一覧に出ている id と完全一致。hour は省略可（省略時は現状維持）。",
-    "固定パターンマッチに頼らず、任意の自然言語の意図を読み取って具体化すること。",
-    "判断基準: 今日までの未完了量、科目偏り、無理のない負荷。",
-    "目的は単なる翌日繰越ではなく、再立案ループで計画の有効性・実現性・納得感を高めること。",
-    "実行→目標→情報→立案の順に仮説を更新し、最終的な計画判断を reason / changeSummary / phaseNotes に反映する。",
-    "phaseNotes は再立案フェーズ（確認→改善→再配置）の論点を短文で。",
-    "questions は本当に判断不能な不足情報がある時のみ 1〜3 件。不要なら必ず空配列。目標の座標・合格条件・前提が文脈から定まらない場合は不足点を聞く。聞く内容は毎回文脈から決め、クライアントは特定トピックの固定質問を挿入しない。",
-    "qaContext に既存回答がある場合は同趣旨の再質問を禁止し、同じ質問文を繰り返さない。",
+    "以下は現在セッションの動的コンテキストです。ルール本体はサーバー側で docs/ai-prompt.md を参照しています。",
+    "返却は JSON 1オブジェクトのみ。",
     `todayKey=${input.todayKey}`,
     `tomorrowKey=${input.tomorrowKey}`,
     `todayBusySlotCount=${input.todayBusySlotCount}`,
     `fallback=${JSON.stringify(input.fallback)}`,
     `qaContext=${input.qaContext ?? "(none)"}`,
-    "qaContext は companion.userNote に加え、相棒の3つの質問への回答も含む。自由要望が空でも回答だけで具体化すること。",
     `sessionContext=${input.sessionContext ?? "(none)"}`,
-    "qaContext と sessionContext の両方を根拠にする。要望だけをなぞらず、sessionContext の事実（昨日のタスク状況・ホーム予定・プロフィール）と突き合わせて矛盾がないか確認する。",
-    "出力は reason / changeSummary / phaseNotes / companionChain / task_month_clear / task_deletes / taskAdjustments / taskCreates / home_plan_ops に一貫して反映する。",
+    "内部仕様:",
+    COMPANION_AI_SYSTEM_PROMPT,
     "未完了タスク（今日以前・繰越候補、先頭24件）:",
     summarizeTasksOverdue(input.tasks, input.todayKey) || "(none)",
     "未完了タスク（明日以降・意図で日付変更し得る、先頭40件）:",
     summarizeTasksFuture(input.tasks, input.todayKey) || "(none)",
     ...(needsCoarseStudyPlanHint(input.tasks)
       ? [
-          "【立案の補足】未完了タスクに科目名だけなど粗いタイトルがある。companionChain.information / placement でギャップを述べ、taskCreates（english/math）で演習単位の行を tomorrowKey 以降に複数件含める。taskAdjustments のみでは不十分。",
+          "【立案の補足】未完了タスクに科目名だけなど粗いタイトルがある。taskCreates（english/math）で演習単位に分解すること。",
         ]
       : []),
   ].join("\n");
@@ -519,6 +490,7 @@ export async function requestAiTomorrowHearing(
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 25000);
+    const directApiKey = apiKey ?? "";
     const res = proxyUrl
       ? await fetch(proxyUrl, {
           method: "POST",
@@ -538,7 +510,7 @@ export async function requestAiTomorrowHearing(
             signal: controller.signal,
             headers: {
               "Content-Type": "application/json",
-              "x-api-key": apiKey,
+              "x-api-key": directApiKey,
               "anthropic-version": "2023-06-01",
             },
             body: JSON.stringify({
@@ -554,7 +526,7 @@ export async function requestAiTomorrowHearing(
             signal: controller.signal,
             headers: {
               "Content-Type": "application/json",
-              Authorization: `Bearer ${apiKey}`,
+              Authorization: `Bearer ${directApiKey}`,
             },
             body: JSON.stringify({
               model,

@@ -75,6 +75,16 @@ async function callOpenAI({ apiKey, model, prompt }) {
 
 const rootEnv = path.join(process.cwd(), ".env");
 loadDotenv(rootEnv);
+const promptDocPath = path.join(process.cwd(), "docs", "ai-prompt.md");
+
+function readPromptDoc() {
+  if (!fs.existsSync(promptDocPath)) return "";
+  try {
+    return fs.readFileSync(promptDocPath, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
 
 const server = http.createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -104,6 +114,8 @@ const server = http.createServer(async (req, res) => {
       const prompt = typeof parsed.prompt === "string" ? parsed.prompt : "";
       const model = typeof parsed.model === "string" ? parsed.model : undefined;
       if (!prompt.trim()) throw new Error("prompt is required");
+      const promptDoc = readPromptDoc();
+      const finalPrompt = promptDoc ? `${promptDoc}\n\n${prompt}` : prompt;
 
       const anthropicKey =
         process.env.ANTHROPIC_API_KEY || process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY || "";
@@ -115,8 +127,8 @@ const server = http.createServer(async (req, res) => {
 
       const content =
         provider === "openai"
-          ? await callOpenAI({ apiKey: openaiKey, model, prompt })
-          : await callAnthropic({ apiKey: anthropicKey, model, prompt });
+          ? await callOpenAI({ apiKey: openaiKey, model, prompt: finalPrompt })
+          : await callAnthropic({ apiKey: anthropicKey, model, prompt: finalPrompt });
 
       res.statusCode = 200;
       res.setHeader("Content-Type", "application/json");
